@@ -27,6 +27,8 @@ Adafruit_MAX31865 thermo = Adafruit_MAX31865(27, 14, 32, 33); // CS, DI, DO, CLK
 // 100.0 for PT100, 1000.0 for PT1000
 #define RNOMINAL  100.0
 
+#define LED_BUILTIN 2
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Adafruit MAX31865 PT100 Sensor Test!");
@@ -36,6 +38,7 @@ void setup() {
   delay(100);
   thermo.readRTD();
   delay(50);
+  pinMode(LED_BUILTIN, OUTPUT);
 
 }
 
@@ -46,11 +49,20 @@ void loop() {
   Serial.print("RTD value: "); Serial.println(rtd);
   float ratio = rtd;
   ratio /= 32768;
+  float resistance = RREF*ratio;
+  if ( resistance >=195){
+    Serial.println("Reset Fuse");
+    digitalWrite(LED_BUILTIN, HIGH);  // change state of the LED by setting the pin to the HIGH voltage level
+    delay(300);                      // wait for a second
+    digitalWrite(LED_BUILTIN, LOW);   // change state of the LED by setting the pin to the LOW voltage level
+  } else if (resistance == 0) {
+    Serial.println("Not Plugged in");
+  } else {
   Serial.print("Ratio = "); Serial.println(ratio,8);
   Serial.print("Resistance = "); Serial.println(RREF*ratio,8);
   Serial.print("Temperature C = "); Serial.println(thermo.temperature(RNOMINAL, RREF));
   Serial.print("Temperature F = "); Serial.println(((thermo.temperature(RNOMINAL, RREF)*(9.0/5.0))+32));
-  
+  }
 
   // Check and print any faults
   uint8_t fault = thermo.readFault();
