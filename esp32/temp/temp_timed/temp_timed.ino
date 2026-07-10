@@ -1,11 +1,19 @@
+// INFO ON SENSOR 
+// 
+// PDF with resistances corralated to temp 
+// https://www.pyromation.com/downloads/data/385_f.pdf
+//
+// Product Model: PT100
+// Range: -50 500 F
+// Poles: +Red -Blue
+//
+// MAX31865 Resistance to Digital Converter (could likely bipass it but no reason to)
+// 
 
 #include <Adafruit_MAX31865.h>
 
 // Use software SPI: CS, DI, DO, CLK
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(27, 14, 32, 33);  // CS, DI, DO, CLK
-
-
-
 
 // use hardware SPI, just pass in the CS pin
 //Adafruit_MAX31865 thermo = Adafruit_MAX31865(10);
@@ -19,7 +27,7 @@ Adafruit_MAX31865 thermo = Adafruit_MAX31865(27, 14, 32, 33);  // CS, DI, DO, CL
 #define LED_BUILTIN 2
 #define RED_LED 4
 #define BLUE_LED 21
-
+#define BUTTON_PIN 22
 // Fault check 
 unsigned long lastCheck = 0;
 const unsigned long CHECK_INTERVAL = 10000; // every 30 seconds
@@ -110,15 +118,14 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(RED_LED, OUTPUT);
   pinMode(BLUE_LED, OUTPUT);
-  pinMode(22, INPUT_PULLUP);
-  Serial.println("PRINT ME");
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 }
 
 
 void loop() {
 
 
-  int buttonState = digitalRead(22);
+  int buttonState = digitalRead(BUTTON_PIN);
   unsigned long now = millis();
   bool timeToAutoRead = (now - lastAutoRead >= AUTO_READ_INTERVAL);
   
