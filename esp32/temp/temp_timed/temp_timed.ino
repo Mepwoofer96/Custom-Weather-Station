@@ -8,6 +8,8 @@
 // Poles: +Red -Blue
 //
 // MAX31865 Resistance to Digital Converter (could likely bipass it but no reason to)
+// Datasheet:
+// https://www.analog.com/media/en/technical-documentation/data-sheets/max31865.pdf
 // 
 
 #include <Adafruit_MAX31865.h>
