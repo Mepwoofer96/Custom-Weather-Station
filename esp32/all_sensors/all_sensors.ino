@@ -1,5 +1,3 @@
-
-
 // Librarys
 
 // RTD
@@ -29,7 +27,13 @@ sensors_event_t event;
 #define RED_LED 4
 #define BLUE_LED 21
 
+// Hall Effect Sensors
+#define NUM_HALL 3
+const int hallPins[NUM_HALL] = {5, 13, 26};  // D5, D13, D12
 
+volatile uint64_t lastEdgeTime[NUM_HALL] = {0, 0, 0};
+volatile uint64_t lastPeriod[NUM_HALL] = {0, 0, 0};
+volatile unsigned long pulseCount[NUM_HALL] = {0, 0, 0};  // optional, useful for debug/avg RPM later
 
 
 enum SensorState { IDLE,
@@ -69,6 +73,7 @@ unsigned long lastServerFire = 0;
 
 void serverSend() {
   if (sensorSampleIdx >= TOTAL_SAMPLE_COUNT) {
+    Serial.println("Buffer");
     Serial.println("idx\ttimestamp\trtd_C\tdht_C\thumidity_%");
     for (int i = 0; i < TOTAL_SAMPLE_COUNT; i++) {
       Serial.print(i);
@@ -80,11 +85,25 @@ void serverSend() {
       Serial.print(temp2Buffer[i], 2);
       Serial.print("\t");
       Serial.println(humidityBuffer[i], 2);
+
+
+      
+    }
+      // Hall effects
+     uint64_t periods[NUM_HALL];
+    unsigned long counts[NUM_HALL];
+    getHallSnapshot(periods, counts);
+    Serial.println("hall\tperiod_us\tpulses\trpm");
+    for (int i = 0; i < NUM_HALL; i++) {
+      float rpm = (periods[i] > 0) ? (60000000.0 / periods[i]) : 0;
+      Serial.print(i); Serial.print("\t");
+      Serial.print((unsigned long)periods[i]); Serial.print("\t");
+      Serial.print(counts[i]); Serial.print("\t");
+      Serial.println(rpm, 2);
     }
     sensorSampleIdx = 0;
   }
 }
-
 
 
 void startSensorWindow() {
@@ -93,6 +112,36 @@ void startSensorWindow() {
   windowSampleCount = 0;
 }
 
+void IRAM_ATTR hallISR0() {
+  uint64_t now = esp_timer_get_time();
+  lastPeriod[0] = now - lastEdgeTime[0];
+  lastEdgeTime[0] = now;
+  pulseCount[0]++;
+}
+
+void IRAM_ATTR hallISR1() {
+  uint64_t now = esp_timer_get_time();
+  lastPeriod[1] = now - lastEdgeTime[1];
+  lastEdgeTime[1] = now;
+  pulseCount[1]++;
+}
+
+void IRAM_ATTR hallISR2() {
+  uint64_t now = esp_timer_get_time();
+  lastPeriod[2] = now - lastEdgeTime[2];
+  lastEdgeTime[2] = now;
+  pulseCount[2]++;
+}
+
+
+void getHallSnapshot(uint64_t periodOut[NUM_HALL], unsigned long countOut[NUM_HALL]) {
+  noInterrupts();
+  for (int i = 0; i < NUM_HALL; i++) {
+    periodOut[i] = lastPeriod[i];
+    countOut[i] = pulseCount[i];
+  }
+  interrupts();
+}
 
 void updateSensor() {
 
@@ -184,6 +233,16 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(RED_LED, OUTPUT);
   pinMode(BLUE_LED, OUTPUT);
+
+// Hall sensor setup
+  pinMode(hallPins[0], INPUT_PULLUP);
+  pinMode(hallPins[1], INPUT_PULLUP);
+  pinMode(hallPins[2], INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(hallPins[0]), hallISR0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(hallPins[1]), hallISR1, FALLING);
+  attachInterrupt(digitalPinToInterrupt(hallPins[2]), hallISR2, FALLING);
+
+
   delay(2000);
   Serial.println("Serial De box er");
   delay(200);
