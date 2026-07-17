@@ -1,3 +1,23 @@
+// all_sensors.ino 
+//
+// Currently runs an autonomous program that prints current weather conditions 
+//
+// Measures:
+// Temperature, Humidity, Wind speed, Wind direction
+// Sensors: under each respective thing it measures
+// MAX with PT100 RTD     Hall Effect   QMC5883P Compass
+//           DHT11 (both temp and humidity)
+//
+// Sends out a serial "data packet" around every 10 min containing all of the above measured values
+// Reads Temp and Humidity every 2 min for 30 seconds
+// 
+// Constantly measures Direction and speed 
+// Keeps higher than 10 deg change of wind
+// 
+// Refer to wiring diagram for more in depth on sensors
+//
+
+
 // Librarys
 
 // RTD
@@ -6,6 +26,10 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
+
+// Compass
+#include <Adafruit_QMC5883P.h>
+
 
 // Defines
 //RTD Max31865
@@ -25,27 +49,44 @@ sensors_event_t event;
 // LED PINS
 #define LED_BUILTIN 2
 #define RED_LED 4
-#define BLUE_LED 21
+#define BLUE_LED 19
 
 // Hall Effect Sensors
 #define NUM_HALL 3
-const int hallPins[NUM_HALL] = {5, 13, 26};  // D5, D13, D12
+const int hallPins[NUM_HALL] = { 5, 13, 26 };  // D5, D13, D12
 
-volatile uint64_t lastEdgeTime[NUM_HALL] = {0, 0, 0};
-volatile uint64_t lastPeriod[NUM_HALL] = {0, 0, 0};
-volatile unsigned long pulseCount[NUM_HALL] = {0, 0, 0};  // optional, useful for debug/avg RPM later
+volatile uint64_t lastEdgeTime[NUM_HALL] = { 0, 0, 0 };
+volatile uint64_t lastPeriod[NUM_HALL] = { 0, 0, 0 };
+volatile unsigned long pulseCount[NUM_HALL] = { 0, 0, 0 };  // optional, useful for debug/avg RPM later
 
+// Compass
+Adafruit_QMC5883P qmc;
+
+#define CompassSDA 21
+#define CompassSCL 22
+
+float declinationAngle = 0.22;  //location's declination in radians
+
+const float HEADING_CHANGE_THRESHOLD = 10.0;  // degrees
+float lastLoggedHeading = -1.0;               // sentinel: -1 means "no reading logged yet"
+bool haveFirstHeading = false;
+
+// Small buffer for logged direction-change events (not fixed-size windows — event-driven)
+const int COMPASS_BUFFER_SIZE = 100;
+float compassHeadingBuffer[COMPASS_BUFFER_SIZE];
+unsigned long compassTimestampBuffer[COMPASS_BUFFER_SIZE];
+int compassEventCount = 0;
 
 enum SensorState { IDLE,
                    SAMPLING };
 SensorState sensorState = IDLE;
 int sensorSampleIdx = 0;
-const int SAMPLES_PER_WINDOW = 30;                                    //1hz for 30 seconds
+const int SAMPLES_PER_WINDOW = 30;                                     //1hz for 30 seconds
 const int WINDOWS_PER_SEND = 5;                                        // 10 min /2 min
 const int TOTAL_SAMPLE_COUNT = SAMPLES_PER_WINDOW * WINDOWS_PER_SEND;  // 150
 const unsigned long SENSOR_SAMPLE_INTERVAL = 1000;
 unsigned long lastSensorSample = 0;
-int windowSampleCount = 0; 
+int windowSampleCount = 0;
 
 
 float temp1Buffer[TOTAL_SAMPLE_COUNT];
@@ -85,23 +126,36 @@ void serverSend() {
       Serial.print(temp2Buffer[i], 2);
       Serial.print("\t");
       Serial.println(humidityBuffer[i], 2);
-
-
-      
     }
-      // Hall effects
-     uint64_t periods[NUM_HALL];
+    // Hall effects
+    uint64_t periods[NUM_HALL];
     unsigned long counts[NUM_HALL];
     getHallSnapshot(periods, counts);
     Serial.println("hall\tperiod_us\tpulses\trpm");
     for (int i = 0; i < NUM_HALL; i++) {
       float rpm = (periods[i] > 0) ? (60000000.0 / periods[i]) : 0;
-      Serial.print(i); Serial.print("\t");
-      Serial.print((unsigned long)periods[i]); Serial.print("\t");
-      Serial.print(counts[i]); Serial.print("\t");
+      Serial.print(i);
+      Serial.print("\t");
+      Serial.print((unsigned long)periods[i]);
+      Serial.print("\t");
+      Serial.print(counts[i]);
+      Serial.print("\t");
       Serial.println(rpm, 2);
     }
+        // Compass direction-change events
+    Serial.println("compass_events");
+    Serial.println("idx\ttimestamp\theading_deg");
+    for (int i = 0; i < compassEventCount; i++) {
+      Serial.print(i);
+      Serial.print("\t");
+      Serial.print(compassTimestampBuffer[i]);
+      Serial.print("\t");
+      Serial.println(compassHeadingBuffer[i], 1);
+    }
+
+
     sensorSampleIdx = 0;
+    compassEventCount = 0;  // reset for the next 10-min cycle
   }
 }
 
@@ -169,14 +223,56 @@ void updateSensor() {
 
     // Timing
     sensorTimestamps[sensorSampleIdx] = now;
-    sensorSampleIdx++; //overall 
-    windowSampleCount++; // per run
+    sensorSampleIdx++;    //overall
+    windowSampleCount++;  // per run
 
     if (windowSampleCount >= SAMPLES_PER_WINDOW) {
       sensorState = IDLE;  // window done, buffer ready to be sent
       digitalWrite(BLUE_LED, LOW);
     }
   }
+}
+
+void updateCompass() {
+  if (!qmc.isDataReady()) return;  // non-blocking check, does nothing if no new data
+
+  int16_t x, y, z;
+  if (!qmc.getRawMagnetic(&x, &y, &z)) return;
+
+  float gx, gy, gz;
+  if (!qmc.getGaussField(&gx, &gy, &gz)) return;
+
+  float heading = atan2(gy, gx) + declinationAngle;
+  if (heading < 0) heading += 2 * PI;
+  if (heading > 2 * PI) heading -= 2 * PI;
+  float headingDegrees = heading * 180.0 / PI;
+
+  if (!haveFirstHeading) {
+    // log the very first reading unconditionally so you have a baseline
+    logHeadingChange(headingDegrees);
+    lastLoggedHeading = headingDegrees;
+    haveFirstHeading = true;
+    return;
+  }
+
+  // angular difference, accounting for the 0/360 wraparound
+  float diff = fabs(headingDegrees - lastLoggedHeading);
+  if (diff > 180.0) diff = 360.0 - diff;
+
+  if (diff >= HEADING_CHANGE_THRESHOLD) {
+    logHeadingChange(headingDegrees);
+    lastLoggedHeading = headingDegrees;
+  }
+}
+
+void logHeadingChange(float headingDegrees) {
+  if (compassEventCount < COMPASS_BUFFER_SIZE) {
+    compassHeadingBuffer[compassEventCount] = headingDegrees;
+    compassTimestampBuffer[compassEventCount] = millis();
+    compassEventCount++;
+  }
+  // if the buffer fills before the next send, oldest events get dropped —
+  // worth deciding later whether that's acceptable or you want to grow the buffer
 }
 
 // Health check
@@ -234,7 +330,7 @@ void setup() {
   pinMode(RED_LED, OUTPUT);
   pinMode(BLUE_LED, OUTPUT);
 
-// Hall sensor setup
+  // Hall sensor setup
   pinMode(hallPins[0], INPUT_PULLUP);
   pinMode(hallPins[1], INPUT_PULLUP);
   pinMode(hallPins[2], INPUT_PULLUP);
@@ -242,6 +338,18 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(hallPins[1]), hallISR1, FALLING);
   attachInterrupt(digitalPinToInterrupt(hallPins[2]), hallISR2, FALLING);
 
+  // Compass setup
+  Wire.begin(CompassSDA, CompassSCL);
+  if (!qmc.begin()) {
+    Serial.println("Failed to find QMC5883P chip");
+  } else {
+    qmc.setMode(QMC5883P_MODE_NORMAL);
+    qmc.setODR(QMC5883P_ODR_50HZ);
+    qmc.setOSR(QMC5883P_OSR_4);
+    qmc.setDSR(QMC5883P_DSR_2);
+    qmc.setRange(QMC5883P_RANGE_8G);
+    qmc.setSetResetMode(QMC5883P_SETRESET_ON);
+  }
 
   delay(2000);
   Serial.println("Serial De box er");
@@ -254,6 +362,7 @@ void loop() {
   updateWindowScheduler();
   updateFaultCheck();
   updateSensor();
+  updateCompass();
   serverSend();
   // updateNetworkSend(); // checks if buffers are full / interval elapsed
   // hall sensors need no update() call — ISRs run independently
